@@ -1,0 +1,9 @@
+target/
+out/
+build/
+.idea/
+*.iml
+*.log
+.env
+.DS_Store
+*.class
