@@ -5,8 +5,8 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 container_name="${UNIVERSITY_DB_CONTAINER:-universitydb}"
 sa_password="${SA_PASSWORD:-MSSQLpass123}"
 db_login_password="${UNIVERSITY_DB_PASSWORD:-UniPass123!}"
-schema_src="${project_root}/database/message(1).sql"
-seed_src="${project_root}/database/01_Reset_And_Seed_OptionB_Dummy_Data_FIXED (1).sql"
+schema_src="${project_root}/database/message.sql"
+seed_src="${project_root}/database/UniversityDB_FULL_RESET_SCHEMA_DATA_WITH_PLAN.sql"
 
 if ! command -v docker >/dev/null 2>&1; then
 	echo "Docker is not installed." >&2

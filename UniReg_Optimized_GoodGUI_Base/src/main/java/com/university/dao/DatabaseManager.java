@@ -17,6 +17,7 @@ public class DatabaseManager {
     private final EnrollmentDAO enrollmentDAO = new EnrollmentDAO();
     private final ScheduleDAO scheduleDAO = new ScheduleDAO();
     private final RegistrationPeriodDAO registrationPeriodDAO = new RegistrationPeriodDAO();
+    private final CoursePlanDAO coursePlanDAO = new CoursePlanDAO();
 
     private DatabaseManager() { verifySchema(); }
 
@@ -28,7 +29,7 @@ public class DatabaseManager {
     public Connection getConnection() throws SQLException { return BaseDAO.dataSource.getConnection(); }
 
     private void verifySchema() {
-        String[] objects = {"students", "instructors", "admins", "courses", "course_offerings", "registration_periods", "enrollments", "assessment_components", "student_assessment_scores", "room_schedule", "rooms", "time_slots", "vw_course_full", "vw_student_full", "vw_instructor_full", "vw_enrollment_gradebook"};
+        String[] objects = {"students", "instructors", "admins", "courses", "course_offerings", "registration_periods", "enrollments", "assessment_components", "student_assessment_scores", "room_schedule", "rooms", "time_slots", "vw_course_full", "vw_student_full", "vw_instructor_full", "vw_enrollment_gradebook", "course_academic_plan"};
         try (Connection conn = getConnection()) {
             for (String obj : objects) {
                 boolean exists;
@@ -70,6 +71,14 @@ public class DatabaseManager {
     public Course getCourse(String courseOrOfferingId) { return courseDAO.getCourse(courseOrOfferingId); }
     public Map<String, Course> getAllCourses() { return courseDAO.getAllCourses(); }
     public String generateOfferingId() { return courseDAO.generateOfferingId(); }
+    public void applyOfferingStatusForTerm(String term, int academicYear) { courseDAO.applyOfferingStatusForTerm(term, academicYear); }
+    public Map<String, Course> getCourseCatalog() { return courseDAO.getCourseCatalog(); }
+    public void insertCatalogCourse(Course course) { courseDAO.insertCatalogCourse(course); }
+    public void deleteCatalogCourse(String courseId) { courseDAO.deleteCatalogCourse(courseId); }
+    public List<Course> getCoursesForOfferingPicker(String majorIdOrName, int studentYear, String term, boolean showAllCourses) {
+        return coursePlanDAO.getCoursesForOfferingPicker(majorIdOrName, studentYear, term, showAllCourses);
+    }
+    public int getPlanCountForCourse(String courseId) { return coursePlanDAO.getPlanCountForCourse(courseId); }
 
     public void insertEnrollment(Enrollment e) { enrollmentDAO.insertEnrollment(e); }
     public void updateEnrollment(Enrollment e) { enrollmentDAO.updateEnrollment(e); }

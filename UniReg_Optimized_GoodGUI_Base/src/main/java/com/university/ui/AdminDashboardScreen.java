@@ -119,7 +119,8 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
         }
 
         if (can(Permission.VIEW_COURSES)) {
-            tabs.addTab(new ChromeTab("📚 Courses & Offerings", this::buildCoursesPanel));
+            tabs.addTab(new ChromeTab("📘 Courses", this::buildCourseCatalogPanel));
+            tabs.addTab(new ChromeTab("🧩 Course Offerings", () -> new AdminCourseOfferingsPanel(this::can, this::checkPermission).build()));
         }
 
         if (can(Permission.VIEW_ACADEMIC_SETTINGS) || can(Permission.MANAGE_REGISTRATION_PERIODS)) {
@@ -130,7 +131,6 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
             tabs.addTab(new ChromeTab("🛡 Admins", this::buildAdminsPanel));
         }
 
-        tabs.addTab(new ChromeTab("🗓 Schedule Monitor", this::buildScheduleMonitorPanel));
         tabs.addTab(new ChromeTab("📊 Analytics", this::buildDashboardPanel));
 
         return tabs;
@@ -544,154 +544,138 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
         });
     }
 
-    // ── Courses / Offerings ───────────────────────────────────────────────
+    // ── Courses Catalog ────────────────────────────────────────────────────
 
-    private VBox buildCoursesPanel() {
-        ObservableList<Course> all = FXCollections.observableArrayList(courses().values());
+    private VBox buildCourseCatalogPanel() {
+        ObservableList<Course> catalog = FXCollections.observableArrayList(db.getCourseCatalog().values());
 
-        Runnable refresh = () -> {
-            coursesCache = db.getAllCourses();
-            all.setAll(coursesCache.values());
-        };
+        Runnable refresh = () -> catalog.setAll(db.getCourseCatalog().values());
 
         TableView<Course> table = GlassTable.<Course>create()
-                .prop("Offering", "offeringId")
-                .col("Course", c -> c.getCourseId() + " • " + shortText(c.getCourseName(), 28))
-                .col("Term", c -> c.getTerm() + " " + c.getAcademicYear())
-                .col("Seats", c -> c.getEnrolled() + "/" + c.getCapacity())
-                .statusCol("Status", c -> c.getStatus().name())
+                .prop("Course", "courseId")
+                .prop("Name", "courseName")
+                .prop("Department", "department")
+                .col("Credits", c -> String.valueOf(c.getCredits()))
+                .col("Plan Uses", c -> String.valueOf(db.getPlanCountForCourse(c.getCourseId())))
+                .col("Offerings", c -> String.valueOf(countQuery("SELECT COUNT(*) FROM course_offerings WHERE course_id = '" + c.getCourseId().replace("'", "''") + "'")))
                 .build();
 
-        table.setItems(all);
+        table.setItems(catalog);
         VBox.setVgrow(table, Priority.ALWAYS);
 
-        TextField search = UIHelper.makeTextField("🔍 Search offering, course, instructor, room, department, or status...");
+        TextField search = UIHelper.makeTextField("🔍 Search course ID, name, department, or description...");
         HBox.setHgrow(search, Priority.ALWAYS);
 
-        search.textProperty().addListener((o, oldValue, q) -> table.setItems(filterCourses(all, q)));
+        search.textProperty().addListener((o, oldValue, q) -> {
+            String query = q == null ? "" : q.trim().toLowerCase();
 
-        Button addBtn = UIHelper.makePrimaryButton("➕ Add Offering");
-        Button editBtn = UIHelper.makeSecondaryButton("✏ Edit Selected");
-        Button delBtn = UIHelper.makeDangerButton("🗑 Delete Offering");
-        Button toggleBtn = UIHelper.makeSecondaryButton("🔄 Toggle Status");
+            if (query.isBlank()) {
+                table.setItems(catalog);
+                return;
+            }
+
+            table.setItems(catalog.filtered(c ->
+                    safe(c.getCourseId()).toLowerCase().contains(query)
+                            || safe(c.getCourseName()).toLowerCase().contains(query)
+                            || safe(c.getDepartment()).toLowerCase().contains(query)
+                            || safe(c.getDescription()).toLowerCase().contains(query)
+            ));
+        });
+
+        Button addBtn = UIHelper.makePrimaryButton("➕ Add Course");
+        Button editBtn = UIHelper.makeSecondaryButton("✏ Edit Course");
+        Button delBtn = UIHelper.makeDangerButton("🗑 Delete Course");
 
         configurePermissionButton(addBtn, Permission.MANAGE_COURSE_OFFERINGS);
         configurePermissionButton(editBtn, Permission.MANAGE_COURSE_OFFERINGS);
-        configurePermissionButton(toggleBtn, Permission.MANAGE_COURSE_OFFERINGS);
         configurePermissionButton(delBtn, Permission.DELETE_RECORDS);
 
         addBtn.setOnAction(e -> {
             if (!checkPermission(Permission.MANAGE_COURSE_OFFERINGS)) return;
-            showCourseOfferingDialog(null, refresh);
+            showCatalogCourseDialog(null, refresh);
         });
 
         editBtn.setOnAction(e -> {
+            if (!checkPermission(Permission.MANAGE_COURSE_OFFERINGS)) return;
+
             Course selected = table.getSelectionModel().getSelectedItem();
 
             if (selected == null) {
-                UIHelper.showError("No Selection", "Select an offering first.");
+                UIHelper.showError("No Selection", "Select a catalog course first.");
                 return;
             }
 
-            if (!checkPermission(Permission.MANAGE_COURSE_OFFERINGS)) return;
-            showCourseOfferingDialog(selected, refresh);
+            showCatalogCourseDialog(selected, refresh);
         });
 
         delBtn.setOnAction(e -> {
+            if (!checkPermission(Permission.DELETE_RECORDS)) return;
+
             Course selected = table.getSelectionModel().getSelectedItem();
 
             if (selected == null) {
-                UIHelper.showError("No Selection", "Select an offering first.");
+                UIHelper.showError("No Selection", "Select a catalog course first.");
                 return;
             }
 
-            if (!checkPermission(Permission.DELETE_RECORDS)) return;
-            if (!UIHelper.showConfirmation("Delete Offering", "Delete offering " + selected.getOfferingId() + " for " + selected.getCourseName() + "?")) return;
+            int offeringCount = (int) countQuery("SELECT COUNT(*) FROM course_offerings WHERE course_id = '" + selected.getCourseId().replace("'", "''") + "'");
+
+            String warning = offeringCount > 0
+                    ? "This course already has " + offeringCount + " offering(s). Deleting it will also delete related offerings, schedules, enrollments, and scores."
+                    : "Delete " + selected.getCourseName() + "?";
+
+            if (!UIHelper.showConfirmation("Delete Course", warning)) return;
 
             try {
-                db.deleteCourse(selected.getOfferingId());
+                db.deleteCatalogCourse(selected.getCourseId());
                 refresh.run();
+                coursesCache = db.getAllCourses();
             } catch (RuntimeException ex) {
                 UIHelper.showError("Delete Failed", rootCauseMessage(ex));
             }
         });
 
-        toggleBtn.setOnAction(e -> {
-            Course selected = table.getSelectionModel().getSelectedItem();
-
-            if (selected == null) {
-                UIHelper.showError("No Selection", "Select an offering first.");
-                return;
-            }
-
-            if (!checkPermission(Permission.MANAGE_COURSE_OFFERINGS)) return;
-
-            try {
-                selected.setStatus(selected.getStatus() == Course.Status.OPEN ? Course.Status.CLOSED : Course.Status.OPEN);
-                db.insertCourse(selected);
-                refresh.run();
-            } catch (RuntimeException ex) {
-                UIHelper.showError("Update Failed", rootCauseMessage(ex));
-            }
-        });
-
-        VBox detail = buildCourseDetailPanel(table);
+        VBox detail = buildCatalogCourseDetailPanel(table);
 
         SplitPane split = new SplitPane(table, detail);
         UIHelper.styleGlassSplitPane(split);
-        split.setDividerPositions(0.58);
+        split.setDividerPositions(0.62);
         VBox.setVgrow(split, Priority.ALWAYS);
 
         VBox panel = panel();
         panel.getChildren().addAll(
-                headerRow("Courses & Offerings", "Manage catalog data, offering data, teaching role, and schedule row.", all.size() + " Offerings", UIHelper.COLOR_SUCCESS),
-                new HBox(10, search, addBtn, editBtn, toggleBtn, delBtn),
+                headerRow("Courses Catalog", "Base course list only. No rooms, instructors, sections, or schedules here.", catalog.size() + " Courses", UIHelper.COLOR_ACCENT),
+                new HBox(10, search, addBtn, editBtn, delBtn),
                 split
         );
 
         return panel;
     }
 
-    private ObservableList<Course> filterCourses(ObservableList<Course> all, String query) {
-        String q = query == null ? "" : query.trim().toLowerCase();
-
-        if (q.isBlank()) return all;
-
-        return all.filtered(c ->
-                safe(c.getOfferingId()).toLowerCase().contains(q)
-                        || safe(c.getCourseId()).toLowerCase().contains(q)
-                        || safe(c.getCourseName()).toLowerCase().contains(q)
-                        || safe(c.getDepartment()).toLowerCase().contains(q)
-                        || safe(c.getInstructorName()).toLowerCase().contains(q)
-                        || safe(c.getRoom()).toLowerCase().contains(q)
-        );
-    }
-
-    private VBox buildCourseDetailPanel(TableView<Course> table) {
-        VBox box = cardShell("Selected Offering Details", "Select an offering from the table.");
+    private VBox buildCatalogCourseDetailPanel(TableView<Course> table) {
+        VBox box = cardShell("Course Details", "Select a catalog course.");
 
         table.getSelectionModel().selectedItemProperty().addListener((obs, old, c) -> {
             box.getChildren().clear();
 
             if (c == null) {
                 box.getChildren().addAll(
-                        styledLabel("Selected Offering Details", 13, UIHelper.COLOR_TEXT),
-                        UIHelper.makeSubtitle("Select an offering from the table.")
+                        styledLabel("Course Details", 13, UIHelper.COLOR_TEXT),
+                        UIHelper.makeSubtitle("Select a catalog course.")
                 );
                 return;
             }
 
+            long planUses = db.getPlanCountForCourse(c.getCourseId());
+            long offeringCount = countQuery("SELECT COUNT(*) FROM course_offerings WHERE course_id = '" + c.getCourseId().replace("'", "''") + "'");
+
             box.getChildren().addAll(
                     styledLabel(c.getCourseId() + " • " + c.getCourseName(), 18, UIHelper.COLOR_TEXT),
-                    UIHelper.makeStatusBadge(c.getOfferingId(), UIHelper.COLOR_ACCENT),
+                    UIHelper.makeStatusBadge(c.getCredits() + " Credits", UIHelper.COLOR_ACCENT),
                     UIHelper.makeSeparator(),
                     UIHelper.makeInsightLine("Department", safe(c.getDepartment()), UIHelper.COLOR_ACCENT),
-                    UIHelper.makeInsightLine("Term", safe(c.getTerm()) + " " + c.getAcademicYear(), UIHelper.COLOR_ACCENT2),
-                    UIHelper.makeInsightLine("Section", safe(c.getSectionCode()), UIHelper.COLOR_SUCCESS),
-                    UIHelper.makeInsightLine("Seats", c.getEnrolled() + "/" + c.getCapacity(), UIHelper.COLOR_WARNING),
-                    UIHelper.makeInsightLine("Room", safe(c.getRoom()), UIHelper.COLOR_ACCENT),
-                    UIHelper.makeInsightLine("Instructor", safe(c.getInstructorName()), UIHelper.COLOR_ACCENT2),
-                    UIHelper.makeInsightLine("Schedule", safe(c.getSchedule()), UIHelper.COLOR_SUCCESS),
+                    UIHelper.makeInsightLine("Used in academic plans", String.valueOf(planUses), UIHelper.COLOR_ACCENT2),
+                    UIHelper.makeInsightLine("Created offerings", String.valueOf(offeringCount), UIHelper.COLOR_SUCCESS),
                     UIHelper.makeSeparator(),
                     UIHelper.makeSubtitle(safe(c.getDescription()))
             );
@@ -700,148 +684,45 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
         return box;
     }
 
-    private void showCourseOfferingDialog(Course existing, Runnable refresh) {
-        if (!checkPermission(Permission.MANAGE_COURSE_OFFERINGS)) return;
-        boolean editMode = existing != null;
-
-        TextField courseId = UIHelper.makeTextField("e.g. CS401");
-        TextField courseName = UIHelper.makeTextField("Course Name");
+    private void showCatalogCourseDialog(Course existing, Runnable refresh) {
+        TextField courseId = UIHelper.makeTextField("e.g. CS101");
+        TextField name = UIHelper.makeTextField("Course name");
         ComboBox<String> department = stringCombo(loadOptions("SELECT department_name FROM departments ORDER BY department_name"), "Department");
         TextField credits = UIHelper.makeTextField("Credits");
         TextField description = UIHelper.makeTextField("Description");
 
-        ComboBox<String> term = stringCombo(List.of("TERM1", "TERM2", "SUMMER"), "Term");
-        TextField academicYear = UIHelper.makeTextField("Academic Year");
-        TextField sectionCode = UIHelper.makeTextField("e.g. L01");
-        TextField capacity = UIHelper.makeTextField("Capacity");
-        ComboBox<String> status = stringCombo(List.of("OPEN", "CLOSED", "CANCELLED", "COMPLETED"), "Status");
-
-        ComboBox<String> meetingType = stringCombo(List.of("LECTURE", "SECTION", "LAB"), "Meeting Type");
-        ComboBox<String> day = stringCombo(List.of("Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"), "Day");
-        ComboBox<String> slot = stringCombo(loadSlotLabels(), "Time Slot");
-        ComboBox<String> room = stringCombo(new ArrayList<>(), "Room");
-        ComboBox<String> instructor = stringCombo(loadInstructorLabels(), "Instructor");
-        ComboBox<String> role = stringCombo(List.of("LECTURE", "ASSISTANT", "LAB"), "Teaching Role");
-
-        meetingType.setOnAction(e -> {
-            String mt = valueOrDefault(meetingType.getValue(), "LECTURE");
-            room.getItems().setAll(loadRoomsForMeetingType(mt));
-
-            if ("LAB".equals(mt)) {
-                role.setValue("LAB");
-            } else if ("SECTION".equals(mt)) {
-                role.setValue("ASSISTANT");
-            } else {
-                role.setValue("LECTURE");
-            }
-        });
-
-        if (editMode) {
+        if (existing != null) {
             courseId.setText(existing.getCourseId());
-            courseName.setText(existing.getCourseName());
+            courseId.setDisable(true);
+            name.setText(existing.getCourseName());
             department.setValue(existing.getDepartment());
             credits.setText(String.valueOf(existing.getCredits()));
             description.setText(existing.getDescription());
-
-            term.setValue(existing.getTerm());
-            academicYear.setText(String.valueOf(existing.getAcademicYear()));
-            sectionCode.setText(existing.getSectionCode());
-            capacity.setText(String.valueOf(existing.getCapacity()));
-            status.setValue(existing.getStatus().name());
-
-            meetingType.setValue(valueOrDefault(existing.getMeetingType(), "LECTURE"));
-            day.setValue(existing.getDayOfWeek());
-            slot.setValue(existing.getSlotId() == null ? null : findSlotLabel(existing.getSlotId()));
-            room.getItems().setAll(loadRoomsForMeetingType(valueOrDefault(meetingType.getValue(), "LECTURE")));
-            room.setValue(existing.getRoom());
-            role.setValue(valueOrDefault(existing.getInstructorRole(), roleFromMeetingType(existing.getMeetingType())));
-            instructor.setValue(findInstructorLabel(existing.getInstructorId()));
         } else {
-            term.setValue("TERM1");
-            academicYear.setText("2026");
-            sectionCode.setText("L01");
-            capacity.setText("30");
-            status.setValue("OPEN");
-            meetingType.setValue("LECTURE");
-            role.setValue("LECTURE");
-            room.getItems().setAll(loadRoomsForMeetingType("LECTURE"));
+            credits.setText("3");
         }
 
-        GridPane catalogGrid = formGrid(
+        GridPane grid = formGrid(
                 "Course ID", courseId,
-                "Name", courseName,
+                "Name", name,
                 "Department", department,
                 "Credits", credits,
                 "Description", description
         );
 
-        GridPane offeringGrid = formGrid(
-                "Term", term,
-                "Academic Year", academicYear,
-                "Section", sectionCode,
-                "Capacity", capacity,
-                "Status", status
-        );
-
-        GridPane scheduleGrid = formGrid(
-                "Meeting Type", meetingType,
-                "Day", day,
-                "Time Slot", slot,
-                "Room", room,
-                "Instructor", instructor,
-                "Teaching Role", role
-        );
-
-        Label rule = UIHelper.makeSubtitle("Rule: LECTURE and SECTION use LECTURE rooms. LAB uses LAB rooms. Save one meeting row at a time for the selected offering.");
-
-        VBox content = new VBox(14,
-                styledLabel("Catalog Data", 14, UIHelper.COLOR_TEXT),
-                catalogGrid,
-                UIHelper.makeSeparator(),
-                styledLabel("Offering Data", 14, UIHelper.COLOR_TEXT),
-                offeringGrid,
-                UIHelper.makeSeparator(),
-                styledLabel("Schedule / Teaching Assignment", 14, UIHelper.COLOR_TEXT),
-                scheduleGrid,
-                rule
-        );
-
-        showDialog(editMode ? "Edit Course Offering" : "Add Course Offering", content, () -> {
+        showDialog(existing == null ? "Add Catalog Course" : "Edit Catalog Course", grid, () -> {
             try {
                 require(courseId, "Course ID");
-                require(courseName, "Course name");
-                require(credits, "Credits");
-                require(capacity, "Capacity");
-                require(academicYear, "Academic year");
+                require(name, "Course name");
 
-                Course c = editMode ? existing : new Course();
-
-                if (!editMode || c.getOfferingId() == null || c.getOfferingId().isBlank()) {
-                    c.setOfferingId(db.generateOfferingId());
-                }
-
+                Course c = existing == null ? new Course() : existing;
                 c.setCourseId(courseId.getText().trim().toUpperCase());
-                c.setCourseName(courseName.getText().trim());
+                c.setCourseName(name.getText().trim());
                 c.setDepartment(valueOrDefault(department.getValue(), "Computer Science & Informatics"));
                 c.setCredits(parseInt(credits.getText(), 3));
                 c.setDescription(description.getText() == null ? "" : description.getText().trim());
 
-                c.setTerm(valueOrDefault(term.getValue(), "TERM1"));
-                c.setAcademicYear(parseInt(academicYear.getText(), 2026));
-                c.setSectionCode(valueOrDefault(sectionCode.getText(), "L01").trim().toUpperCase());
-                c.setCapacity(parseInt(capacity.getText(), 30));
-                c.setStatus(Course.Status.valueOf(valueOrDefault(status.getValue(), "OPEN")));
-
-                c.setMeetingType(valueOrDefault(meetingType.getValue(), "LECTURE"));
-                c.setDayOfWeek(valueOrDefault(day.getValue(), "Saturday"));
-                c.setSlotId(parseSlotId(slot.getValue()));
-                c.setRoom(valueOrDefault(room.getValue(), ""));
-
-                String instructorId = parseIdFromLabel(instructor.getValue());
-                c.setInstructorId(instructorId);
-                c.setInstructorRole(valueOrDefault(role.getValue(), roleFromMeetingType(c.getMeetingType())));
-
-                db.insertCourse(c);
+                db.insertCatalogCourse(c);
                 refresh.run();
             } catch (Exception ex) {
                 UIHelper.showError("Course Save Failed", rootCauseMessage(ex));
@@ -849,6 +730,7 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
         });
     }
 
+    // ── Courses / Offerings ───────────────────────────────────────────────
 
     // ── Academic Settings / Registration Periods ──────────────────────────
 
@@ -1205,149 +1087,7 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
         });
     }
 
-
     // ── Schedule Monitor ──────────────────────────────────────────────────
-
-    private VBox buildScheduleMonitorPanel() {
-        ObservableList<ScheduleAdminRow> rows = FXCollections.observableArrayList(loadScheduleRows());
-
-        TableView<ScheduleAdminRow> table = GlassTable.<ScheduleAdminRow>create()
-                .col("Offering", ScheduleAdminRow::offeringId)
-                .col("Course", ScheduleAdminRow::courseCode)
-                .col("Type", ScheduleAdminRow::meetingType)
-                .col("Day", ScheduleAdminRow::day)
-                .col("Slot", r -> String.valueOf(r.slot()))
-                .col("Room", ScheduleAdminRow::room)
-                .col("Room Type", ScheduleAdminRow::roomType)
-                .col("Instructor", ScheduleAdminRow::instructor)
-                .build();
-
-        table.setItems(rows);
-        VBox.setVgrow(table, Priority.ALWAYS);
-
-        Button refresh = UIHelper.makeSecondaryButton("🔄 Refresh");
-        refresh.setOnAction(e -> rows.setAll(loadScheduleRows()));
-
-        VBox conflictCard = buildConflictSummaryCard();
-
-        VBox panel = panel();
-        panel.getChildren().addAll(
-                headerRow("Schedule Monitor", "Room usage, instructor assignments, and conflict checks.", rows.size() + " Schedule Rows", UIHelper.COLOR_ACCENT),
-                new HBox(10, refresh),
-                conflictCard,
-                table
-        );
-
-        return panel;
-    }
-
-    private VBox buildConflictSummaryCard() {
-        long invalidRoomType = countQuery("""
-            SELECT COUNT(*)
-            FROM room_schedule rs
-            JOIN rooms r ON rs.room_id = r.room_id
-            WHERE (rs.meeting_type IN ('LECTURE', 'SECTION') AND r.room_type <> 'LECTURE')
-               OR (rs.meeting_type = 'LAB' AND r.room_type <> 'LAB')
-        """);
-
-        long roomConflicts = countQuery("""
-            SELECT COUNT(*)
-            FROM (
-                SELECT room_id, day_of_week, slot_id
-                FROM room_schedule
-                GROUP BY room_id, day_of_week, slot_id
-                HAVING COUNT(*) > 1
-            ) x
-        """);
-
-        long instructorConflicts = countQuery("""
-            SELECT COUNT(*)
-            FROM (
-                SELECT instructor_id, day_of_week, slot_id
-                FROM room_schedule
-                WHERE instructor_id IS NOT NULL
-                GROUP BY instructor_id, day_of_week, slot_id
-                HAVING COUNT(*) > 1
-            ) x
-        """);
-
-        VBox lines = new VBox(7,
-                UIHelper.makeInsightLine("Invalid room type rows", String.valueOf(invalidRoomType), invalidRoomType == 0 ? UIHelper.COLOR_SUCCESS : UIHelper.COLOR_DANGER),
-                UIHelper.makeInsightLine("Room conflicts", String.valueOf(roomConflicts), roomConflicts == 0 ? UIHelper.COLOR_SUCCESS : UIHelper.COLOR_DANGER),
-                UIHelper.makeInsightLine("Instructor conflicts", String.valueOf(instructorConflicts), instructorConflicts == 0 ? UIHelper.COLOR_SUCCESS : UIHelper.COLOR_DANGER)
-        );
-
-        VBox card = cardShell("Conflict Check", "All values should be zero.");
-        card.getChildren().add(lines);
-        return card;
-    }
-
-    private List<ScheduleAdminRow> loadScheduleRows() {
-        List<ScheduleAdminRow> rows = new ArrayList<>();
-
-        String sql = """
-            SELECT TOP 300
-                rs.offering_id,
-                co.course_id,
-                c.course_name,
-                rs.meeting_type,
-                rs.day_of_week,
-                rs.slot_id,
-                rs.room_id,
-                r.room_type,
-                COALESCE(i.title + ' ' + i.first_name + ' ' + i.last_name, 'N/A') AS instructor_name
-            FROM room_schedule rs
-            JOIN course_offerings co ON rs.offering_id = co.offering_id
-            JOIN courses c ON co.course_id = c.course_id
-            JOIN rooms r ON rs.room_id = r.room_id
-            LEFT JOIN instructors i ON rs.instructor_id = i.id
-            ORDER BY
-                CASE rs.day_of_week
-                    WHEN 'Saturday' THEN 1
-                    WHEN 'Sunday' THEN 2
-                    WHEN 'Monday' THEN 3
-                    WHEN 'Tuesday' THEN 4
-                    WHEN 'Wednesday' THEN 5
-                    WHEN 'Thursday' THEN 6
-                    ELSE 7
-                END,
-                rs.slot_id,
-                co.course_id
-        """;
-
-        try (Connection conn = db.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-
-            while (rs.next()) {
-                rows.add(new ScheduleAdminRow(
-                        rs.getString("offering_id"),
-                        rs.getString("course_id") + " — " + rs.getString("course_name"),
-                        rs.getString("meeting_type"),
-                        rs.getString("day_of_week"),
-                        rs.getInt("slot_id"),
-                        rs.getString("room_id"),
-                        rs.getString("room_type"),
-                        rs.getString("instructor_name")
-                ));
-            }
-        } catch (SQLException ex) {
-            UIHelper.showError("Schedule Load Failed", rootCauseMessage(ex));
-        }
-
-        return rows;
-    }
-
-    private record ScheduleAdminRow(
-            String offeringId,
-            String courseCode,
-            String meetingType,
-            String day,
-            int slot,
-            String room,
-            String roomType,
-            String instructor
-    ) {}
 
     // ── Small reusable helpers ────────────────────────────────────────────
 
@@ -1394,105 +1134,6 @@ public class AdminDashboardScreen extends BaseDashboardScreen {
         }
 
         return values;
-    }
-
-    private List<String> loadSlotLabels() {
-        List<String> values = loadOptions("""
-            SELECT CAST(slot_id AS VARCHAR(10)) + ' - ' +
-                   CONVERT(VARCHAR(5), start_time, 108) + ' - ' +
-                   CONVERT(VARCHAR(5), end_time, 108)
-            FROM time_slots
-            ORDER BY slot_id
-        """);
-
-        if (values.isEmpty()) {
-            values = List.of(
-                    "1 - 08:30 - 10:00",
-                    "2 - 10:15 - 11:45",
-                    "3 - 12:00 - 13:30",
-                    "4 - 13:45 - 15:15",
-                    "5 - 15:30 - 17:00",
-                    "6 - 17:15 - 18:45"
-            );
-        }
-
-        return values;
-    }
-
-    private List<String> loadRoomsForMeetingType(String meetingType) {
-        String roomType = "LAB".equalsIgnoreCase(meetingType) ? "LAB" : "LECTURE";
-
-        List<String> values = loadOptions(
-                "SELECT room_id FROM rooms WHERE room_type = '" + roomType + "' ORDER BY room_id"
-        );
-
-        if (values.isEmpty()) {
-            values = "LAB".equals(roomType) ? List.of("LAB001") : List.of("L001");
-        }
-
-        return values;
-    }
-
-    private List<String> loadInstructorLabels() {
-        List<String> values = loadOptions("""
-            SELECT title + ' ' + first_name + ' ' + last_name + ' (' + id + ')'
-            FROM instructors
-            WHERE status = 'ACTIVE'
-            ORDER BY id
-        """);
-
-        if (values.isEmpty()) {
-            values = List.of("Instructor (INS001)");
-        }
-
-        return values;
-    }
-
-    private String findInstructorLabel(String instructorId) {
-        if (instructorId == null || instructorId.isBlank()) return null;
-
-        return loadInstructorLabels().stream()
-                .filter(label -> label.contains("(" + instructorId + ")"))
-                .findFirst()
-                .orElse(null);
-    }
-
-    private String findSlotLabel(Integer slotId) {
-        if (slotId == null) return null;
-
-        return loadSlotLabels().stream()
-                .filter(label -> label.startsWith(slotId + " "))
-                .findFirst()
-                .orElse(null);
-    }
-
-    private int parseSlotId(String label) {
-        if (label == null || label.isBlank()) return 1;
-
-        try {
-            return Integer.parseInt(label.split(" ")[0].trim());
-        } catch (Exception ex) {
-            return 1;
-        }
-    }
-
-    private String parseIdFromLabel(String label) {
-        if (label == null || label.isBlank()) return null;
-
-        int start = label.lastIndexOf('(');
-        int end = label.lastIndexOf(')');
-
-        if (start >= 0 && end > start) {
-            return label.substring(start + 1, end).trim();
-        }
-
-        return label.trim();
-    }
-
-    private String roleFromMeetingType(String meetingType) {
-        if ("LAB".equalsIgnoreCase(meetingType)) return "LAB";
-        if ("SECTION".equalsIgnoreCase(meetingType)) return "ASSISTANT";
-        return "LECTURE";
     }
 
     private long countQuery(String sql) {

@@ -102,6 +102,56 @@ public class CourseDAO extends BaseDAO {
         }
     }
 
+
+    public Map<String, Course> getCourseCatalog() {
+        Map<String, Course> map = new LinkedHashMap<>();
+
+        queryList("""
+            SELECT
+                c.course_id,
+                c.course_name,
+                c.description,
+                c.credits,
+                d.department_name
+            FROM courses c
+            JOIN departments d ON c.department_id = d.department_id
+            ORDER BY d.department_name, c.course_id
+        """, rs -> {
+            Course c = new Course();
+            c.setCourseId(rs.getString("course_id"));
+            c.setCourseName(rs.getString("course_name"));
+            c.setDescription(rs.getString("description"));
+            c.setCredits(rs.getInt("credits"));
+            c.setDepartment(rs.getString("department_name"));
+            map.put(c.getCourseId(), c);
+            return null;
+        });
+
+        return map;
+    }
+
+    public void insertCatalogCourse(Course c) {
+        String departmentId = findDepartmentId(c.getDepartment());
+
+        execute("""
+            IF NOT EXISTS (SELECT 1 FROM courses WHERE course_id = ?)
+                INSERT INTO courses (course_id, course_name, description, department_id, credits)
+                VALUES (?, ?, ?, ?, ?)
+            ELSE
+                UPDATE courses
+                SET course_name = ?, description = ?, department_id = ?, credits = ?
+                WHERE course_id = ?
+        """,
+                c.getCourseId(),
+                c.getCourseId(), c.getCourseName(), c.getDescription(), departmentId, c.getCredits(),
+                c.getCourseName(), c.getDescription(), departmentId, c.getCredits(), c.getCourseId()
+        );
+    }
+
+    public void deleteCatalogCourse(String courseId) {
+        deleteCourse(courseId);
+    }
+
     public Course getCourse(String courseOrOfferingId) {
         return querySingle("""
             SELECT TOP 1 * FROM vw_course_full
@@ -139,8 +189,7 @@ public class CourseDAO extends BaseDAO {
     }
 
     private Course mapCourseFromView(ResultSet rs, List<String> prereq, List<String> enrolledIds) throws SQLException {
-        Course.Status status;
-        try { status = Course.Status.valueOf(rs.getString("status")); } catch (Exception ex) { status = Course.Status.OPEN; }
+        Course.Status status = "OPEN".equalsIgnoreCase(rs.getString("status")) ? Course.Status.OPEN : Course.Status.CLOSED;
         Course c = new Course(rs.getString("offering_id"), rs.getString("course_id"), rs.getString("course_name"),
                 rs.getString("department_name"), rs.getInt("credits"), rs.getString("term"), rs.getInt("academic_year"),
                 rs.getString("section_code"), rs.getInt("capacity"), rs.getInt("enrolled"), rs.getString("instructor_ids"),
@@ -190,6 +239,21 @@ public class CourseDAO extends BaseDAO {
 
     private record ScheduleBits(String dayOfWeek, int slotId, String meetingType, String roomId, String roomType, String instructorId) {}
 
+
+    public void applyOfferingStatusForTerm(String term, int academicYear) {
+        String cleanTerm = safeTerm(term);
+        int cleanYear = safeYear(academicYear);
+
+        execute("""
+            UPDATE course_offerings
+            SET status =
+                CASE
+                    WHEN term = ? AND academic_year = ? THEN 'OPEN'
+                    ELSE 'CLOSED'
+                END
+            WHERE academic_year = ?
+        """, cleanTerm, cleanYear, cleanYear);
+    }
 
     public String generateOfferingId() { return generateId("course_offerings", "offering_id", "OFF", 3); }
 
